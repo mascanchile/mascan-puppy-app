@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from io import BytesIO
+import json
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 APP_NAME = "MasCan Puppy APP"
@@ -54,6 +56,40 @@ def normalize_code(value) -> str:
     if text.endswith(".0") and text[:-2].isdigit():
         return text[:-2]
     return text
+
+
+def code_variants(value) -> set[str]:
+    code = normalize_code(value)
+    variants = {code} if code else set()
+    if code.isdigit():
+        variants.add(code.lstrip("0") or "0")
+    return variants
+
+
+def set_last_message(message: str) -> None:
+    st.session_state.last_message = message
+
+
+def speak_once(message: str) -> None:
+    if not message or st.session_state.get("last_spoken_message") == message:
+        return
+    st.session_state.last_spoken_message = message
+    safe_message = json.dumps(message, ensure_ascii=False)
+    components.html(
+        f"""
+        <script>
+        const message = {safe_message};
+        if ("speechSynthesis" in window.parent) {{
+            window.parent.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(message);
+            utterance.lang = "es-CL";
+            utterance.rate = 1;
+            window.parent.speechSynthesis.speak(utterance);
+        }}
+        </script>
+        """,
+        height=0,
+    )
 
 
 def sample_orders() -> pd.DataFrame:
@@ -199,7 +235,7 @@ def initialize_state(orders: pd.DataFrame) -> None:
     st.session_state.orders = orders
     st.session_state.scanned = {}
     st.session_state.selected_order = None
-    st.session_state.last_message = "Pedidos cargados."
+    set_last_message("Pedidos cargados.")
 
 
 def order_rows(order_id: str) -> pd.DataFrame:
@@ -222,11 +258,13 @@ def expected_by_code(order_id: str) -> dict[str, int]:
 
 def canonical_for_scan(order_id: str, code: str) -> str | None:
     code = normalize_code(code)
+    scanned_variants = code_variants(code)
     rows = order_rows(order_id)
     for _, row in rows.iterrows():
         cb = normalize_code(row["CB"])
         alt = normalize_code(row["CB alt"])
-        if code in {cb, alt}:
+        valid_variants = code_variants(cb) | code_variants(alt)
+        if scanned_variants & valid_variants:
             return cb
     return None
 
@@ -245,38 +283,75 @@ def is_order_complete(order_id: str) -> bool:
     return True
 
 
-def process_scan(raw_code: str) -> None:
+def all_orders_complete() -> bool:
+    if "orders" not in st.session_state:
+        return False
+    order_ids = st.session_state.orders["MELI_ID"].astype(str).unique()
+    return len(order_ids) > 0 and all(is_order_complete(order_id) for order_id in order_ids)
+
+
+def product_exists_anywhere(code: str) -> bool:
+    scanned_variants = code_variants(code)
+    if not scanned_variants or "orders" not in st.session_state:
+        return False
+    for _, row in st.session_state.orders.iterrows():
+        variants = code_variants(row["CB"]) | code_variants(row["CB alt"])
+        if scanned_variants & variants:
+            return True
+    return False
+
+
+def process_order_scan(raw_order_id: str) -> None:
+    order_id = normalize_code(raw_order_id)
+    if not order_id:
+        return
+    all_orders = set(st.session_state.orders["MELI_ID"].astype(str))
+    if order_id in all_orders:
+        if is_order_complete(order_id):
+            st.session_state.selected_order = None
+            set_last_message("Pedido ya ingresado.")
+            return
+        st.session_state.selected_order = order_id
+        set_last_message(f"Pedido seleccionado: {order_id}")
+        return
+
+    st.session_state.selected_order = None
+    set_last_message("Pedido no existe.")
+
+
+def process_product_scan(raw_code: str) -> None:
     code = normalize_code(raw_code)
     if not code:
         return
 
-    all_orders = set(st.session_state.orders["MELI_ID"].astype(str))
-    if code in all_orders:
-        st.session_state.selected_order = code
-        st.session_state.last_message = f"Pedido seleccionado: {code}"
-        return
-
     order_id = st.session_state.get("selected_order")
     if not order_id:
-        st.session_state.last_message = "Primero escanea una etiqueta/pedido."
+        set_last_message("Primero ingresa un MELI ID.")
         return
 
     canonical = canonical_for_scan(order_id, code)
     if not canonical:
-        st.session_state.last_message = "Producto no pertenece al pedido."
+        if product_exists_anywhere(code):
+            set_last_message("Producto no pertenece al pedido.")
+        else:
+            set_last_message("Producto no existe.")
         return
 
     expected = expected_by_code(order_id)
     scanned = scanned_for_order(order_id)
     if scanned.get(canonical, 0) >= expected.get(canonical, 0):
-        st.session_state.last_message = "Producto sobrante."
+        set_last_message("Producto sobrante.")
         return
 
     scanned[canonical] = scanned.get(canonical, 0) + 1
     if is_order_complete(order_id):
-        st.session_state.last_message = "Pedido terminado con éxito."
+        st.session_state.selected_order = None
+        if all_orders_complete():
+            set_last_message("Todos los pedidos fueron revisados con éxito.")
+        else:
+            set_last_message("Pedido terminado con éxito.")
     else:
-        st.session_state.last_message = "Producto correcto."
+        set_last_message("Producto correcto.")
 
 
 def status_table() -> pd.DataFrame:
@@ -335,18 +410,34 @@ def render_order_control() -> None:
     st.subheader("Control de pedidos")
     if "orders" not in st.session_state:
         initialize_state(sample_orders())
-    if "scan_input_counter" not in st.session_state:
-        st.session_state.scan_input_counter = 0
+    if "order_input_counter" not in st.session_state:
+        st.session_state.order_input_counter = 0
+    if "product_input_counter" not in st.session_state:
+        st.session_state.product_input_counter = 0
 
-    st.info(st.session_state.get("last_message", "Listo para escanear."))
-    scan_key = f"scan_input_{st.session_state.scan_input_counter}"
-    scan = st.text_input("Escanear etiqueta o producto", key=scan_key, placeholder="Escanea aquí")
-    if scan:
-        process_scan(scan)
-        st.session_state.scan_input_counter += 1
+    current_message = st.session_state.get("last_message", "Listo para escanear.")
+    st.info(current_message)
+    speak_once(current_message)
+    selected = st.session_state.get("selected_order")
+    if not selected:
+        order_key = f"order_input_{st.session_state.order_input_counter}"
+        order_scan = st.text_input("MELI ID del pedido", key=order_key, placeholder="Escanea o escribe el MELI ID")
+        if order_scan:
+            process_order_scan(order_scan)
+            st.session_state.order_input_counter += 1
+            st.rerun()
+        st.divider()
+        st.write("Resumen")
+        st.dataframe(status_table(), use_container_width=True, hide_index=True)
+        return
+
+    product_key = f"product_input_{st.session_state.product_input_counter}"
+    product_scan = st.text_input("Codigo del producto", key=product_key, placeholder="Escanea el producto")
+    if product_scan:
+        process_product_scan(product_scan)
+        st.session_state.product_input_counter += 1
         st.rerun()
 
-    selected = st.session_state.get("selected_order")
     if selected:
         st.write(f"Pedido activo: `{selected}`")
         rows = order_rows(selected)
