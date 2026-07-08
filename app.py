@@ -25,6 +25,24 @@ def page_setup() -> None:
     st.caption("Mini app online para pedidos MELI, etiquetas y control con pistola.")
 
 
+def require_app_password() -> bool:
+    expected_password = st.secrets.get("APP_PASSWORD", "")
+    if not expected_password:
+        st.warning("Falta configurar APP_PASSWORD en Streamlit Secrets.")
+        return False
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    password = st.text_input("Clave de acceso", type="password")
+    if st.button("Entrar"):
+        if password == expected_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        st.error("Clave incorrecta.")
+    return False
+
+
 def normalize_code(value) -> str:
     text = "" if value is None else str(value).strip()
     if text.endswith(".0") and text[:-2].isdigit():
@@ -287,6 +305,9 @@ def render_download_state() -> None:
 
 def main() -> None:
     page_setup()
+    if not require_app_password():
+        return
+
     module = st.sidebar.radio(
         "Módulo",
         ["Inicio", "Ventas del día", "Etiquetas", "Control de pedidos", "Control de carga"],
