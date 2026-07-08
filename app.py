@@ -335,12 +335,15 @@ def render_order_control() -> None:
     st.subheader("Control de pedidos")
     if "orders" not in st.session_state:
         initialize_state(sample_orders())
+    if "scan_input_counter" not in st.session_state:
+        st.session_state.scan_input_counter = 0
 
     st.info(st.session_state.get("last_message", "Listo para escanear."))
-    scan = st.text_input("Escanear etiqueta o producto", key="scan_input", placeholder="Escanea aquí")
+    scan_key = f"scan_input_{st.session_state.scan_input_counter}"
+    scan = st.text_input("Escanear etiqueta o producto", key=scan_key, placeholder="Escanea aquí")
     if scan:
         process_scan(scan)
-        st.session_state.scan_input = ""
+        st.session_state.scan_input_counter += 1
         st.rerun()
 
     selected = st.session_state.get("selected_order")
