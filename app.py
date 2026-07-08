@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
 import json
+import re
 
 import pandas as pd
 import streamlit as st
@@ -156,24 +157,49 @@ def convert_mascan_daily_sales(dataframe: pd.DataFrame) -> pd.DataFrame:
             "o una tabla con columnas: " + ", ".join(REQUIRED_COLUMNS)
         )
 
+    dataframe = dataframe.copy()
+    shipping_column = first_existing_column(
+        dataframe,
+        ["Tipo de Despacho", "Centro de envío", "Centro de envio", "Forma de entrega"],
+    )
+    dataframe["__puppy_meli_id"] = dataframe["# de venta"].map(normalize_code)
+    dataframe["__puppy_shipping"] = dataframe[shipping_column] if shipping_column else ""
+
+    active_package_id = ""
+    active_package_shipping = ""
+    package_rows_left = 0
+    for index, row in dataframe.iterrows():
+        state = str(row["Estado"]).strip()
+        package_match = re.fullmatch(r"Paquete de\s+(\d+)\s+productos?", state, flags=re.IGNORECASE)
+        if package_match:
+            active_package_id = normalize_code(row["# de venta"])
+            active_package_shipping = str(row[shipping_column]).strip() if shipping_column else ""
+            package_rows_left = int(package_match.group(1))
+            continue
+
+        if state in PRODUCT_STATES and active_package_id and package_rows_left > 0:
+            dataframe.at[index, "__puppy_meli_id"] = active_package_id
+            if not str(dataframe.at[index, "__puppy_shipping"]).strip():
+                dataframe.at[index, "__puppy_shipping"] = active_package_shipping
+            package_rows_left -= 1
+            if package_rows_left == 0:
+                active_package_id = ""
+                active_package_shipping = ""
+
     product_rows = dataframe[dataframe["Estado"].isin(PRODUCT_STATES)].copy()
     if product_rows.empty:
         raise ValueError("No encontré filas de productos en el archivo.")
 
     title_column = "Título de la publicación" if "Título de la publicación" in product_rows.columns else "SKU"
-    shipping_column = first_existing_column(
-        product_rows,
-        ["Tipo de Despacho", "Centro de envío", "Centro de envio", "Forma de entrega"],
-    )
 
     converted = pd.DataFrame(
         {
-            "MELI_ID": product_rows["# de venta"],
+            "MELI_ID": product_rows["__puppy_meli_id"],
             "CB": product_rows["SKU"],
             "CB alt": product_rows["SKU"],
             "Nombre Producto": product_rows[title_column],
             "Cant.": product_rows["Unidades"],
-            "Tipo de Despacho": product_rows[shipping_column] if shipping_column else "",
+            "Tipo de Despacho": product_rows["__puppy_shipping"],
         }
     )
     return converted
@@ -240,6 +266,7 @@ def initialize_state(orders: pd.DataFrame) -> None:
     st.session_state.orders_fingerprint = fingerprint
     st.session_state.orders = orders
     st.session_state.scanned = {}
+    st.session_state.scan_history = []
     st.session_state.selected_order = None
     set_last_message("Pedidos cargados.")
 
@@ -350,6 +377,7 @@ def process_product_scan(raw_code: str) -> None:
         return
 
     scanned[canonical] = scanned.get(canonical, 0) + 1
+    st.session_state.scan_history.append({"order_id": order_id, "code": canonical})
     if is_order_complete(order_id):
         st.session_state.selected_order = None
         if all_orders_complete():
@@ -358,6 +386,23 @@ def process_product_scan(raw_code: str) -> None:
             set_last_message("Pedido terminado con éxito.")
     else:
         set_last_message("Producto correcto.")
+
+
+def undo_last_scan() -> None:
+    history = st.session_state.get("scan_history", [])
+    if not history:
+        set_last_message("No hay lecturas para deshacer.")
+        return
+
+    last_scan = history.pop()
+    order_id = last_scan["order_id"]
+    code = last_scan["code"]
+    scanned = scanned_for_order(order_id)
+    scanned[code] = max(scanned.get(code, 0) - 1, 0)
+    if scanned[code] == 0:
+        scanned.pop(code, None)
+    st.session_state.selected_order = order_id
+    set_last_message("Última lectura deshecha.")
 
 
 def status_table() -> pd.DataFrame:
@@ -375,6 +420,67 @@ def status_table() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def detail_status_table() -> pd.DataFrame:
+    rows = []
+    grouped = st.session_state.orders.groupby(
+        ["MELI_ID", "CB", "CB alt", "Nombre Producto", "Tipo de Despacho"],
+        sort=False,
+        dropna=False,
+    )
+    for keys, group in grouped:
+        order_id, cb, cb_alt, product_name, shipping_type = keys
+        canonical = normalize_code(cb)
+        expected = int(group["Cant."].sum())
+        read = scanned_for_order(str(order_id)).get(canonical, 0)
+        pending = max(expected - read, 0)
+        rows.append(
+            {
+                "MELI_ID": order_id,
+                "CB": canonical,
+                "CB alt": normalize_code(cb_alt),
+                "Nombre Producto": product_name,
+                "Tipo de Despacho": shipping_type,
+                "Esperado": expected,
+                "Leido": read,
+                "Pendiente": pending,
+                "Estado": "Listo" if pending == 0 else "Pendiente",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def scan_history_table() -> pd.DataFrame:
+    rows = []
+    for index, scan in enumerate(st.session_state.get("scan_history", []), start=1):
+        order_id = scan["order_id"]
+        code = scan["code"]
+        product_rows = order_rows(order_id)
+        product_rows = product_rows[product_rows["CB"].map(normalize_code) == code]
+        product_name = ""
+        if not product_rows.empty:
+            product_name = product_rows["Nombre Producto"].iloc[0]
+        rows.append(
+            {
+                "N": index,
+                "MELI_ID": order_id,
+                "CB": code,
+                "Nombre Producto": product_name,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def shipping_summary(orders: pd.DataFrame) -> dict[str, int]:
+    order_summary = orders.groupby("MELI_ID", sort=False)["Tipo de Despacho"].first().fillna("")
+    flex_count = int(order_summary.str.contains("flex", case=False, na=False).sum())
+    total_orders = int(order_summary.shape[0])
+    return {
+        "total": total_orders,
+        "flex": flex_count,
+        "colecta": total_orders - flex_count,
+    }
+
+
 def render_home() -> None:
     st.subheader("Inicio")
     st.write(
@@ -390,7 +496,13 @@ def render_daily_sales() -> None:
     try:
         orders = clean_orders(load_uploaded_orders(uploaded))
         initialize_state(orders)
-        st.success(f"Pedidos cargados: {orders['MELI_ID'].nunique()} · Productos: {len(orders)}")
+        summary = shipping_summary(orders)
+        st.success(f"Pedidos cargados: {summary['total']} · Productos: {len(orders)}")
+        total_col, flex_col, colecta_col, products_col = st.columns(4)
+        total_col.metric("Pedidos", summary["total"])
+        flex_col.metric("Flex", summary["flex"])
+        colecta_col.metric("Colecta", summary["colecta"])
+        products_col.metric("Productos", len(orders))
         st.dataframe(orders, use_container_width=True, hide_index=True)
     except Exception as error:
         st.error("No pude cargar las ventas.")
@@ -424,6 +536,10 @@ def render_order_control() -> None:
     current_message = st.session_state.get("last_message", "Listo para escanear.")
     st.info(current_message)
     speak_once(current_message)
+    if st.button("Deshacer última lectura", disabled=not st.session_state.get("scan_history")):
+        undo_last_scan()
+        st.rerun()
+
     selected = st.session_state.get("selected_order")
     if not selected:
         order_key = f"order_input_{st.session_state.order_input_counter}"
@@ -482,6 +598,8 @@ def render_download_state() -> None:
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         st.session_state.orders.to_excel(writer, index=False, sheet_name="Pedidos")
         status_table().to_excel(writer, index=False, sheet_name="Estado")
+        detail_status_table().to_excel(writer, index=False, sheet_name="Detalle")
+        scan_history_table().to_excel(writer, index=False, sheet_name="Lecturas")
     st.download_button(
         "Descargar estado Excel",
         data=output.getvalue(),
