@@ -18,6 +18,12 @@ REQUIRED_COLUMNS = [
     "Tipo de Despacho",
 ]
 
+PRODUCT_STATES = {
+    "Etiqueta impresa",
+    "Etiqueta lista para imprimir",
+    "Venta Full",
+}
+
 
 def page_setup() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="M", layout="wide")
@@ -82,6 +88,11 @@ def sample_orders() -> pd.DataFrame:
 
 
 def clean_orders(dataframe: pd.DataFrame) -> pd.DataFrame:
+    dataframe = dataframe.copy()
+
+    if not all(column in dataframe.columns for column in REQUIRED_COLUMNS):
+        dataframe = convert_mascan_daily_sales(dataframe)
+
     missing = [column for column in REQUIRED_COLUMNS if column not in dataframe.columns]
     if missing:
         raise ValueError("Faltan columnas: " + ", ".join(missing))
@@ -94,13 +105,89 @@ def clean_orders(dataframe: pd.DataFrame) -> pd.DataFrame:
     return orders.reset_index(drop=True)
 
 
+def convert_mascan_daily_sales(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Convierte Ventas_del_dia_MELI_depuradas.xlsx al formato simple Puppy."""
+    required = {"# de venta", "Estado", "Unidades", "SKU"}
+    if not required.issubset(set(dataframe.columns)):
+        raise ValueError(
+            "No reconozco el formato. Puedes cargar el Excel depurado de MasCan APP "
+            "o una tabla con columnas: " + ", ".join(REQUIRED_COLUMNS)
+        )
+
+    product_rows = dataframe[dataframe["Estado"].isin(PRODUCT_STATES)].copy()
+    if product_rows.empty:
+        raise ValueError("No encontré filas de productos en el archivo.")
+
+    title_column = "Título de la publicación" if "Título de la publicación" in product_rows.columns else "SKU"
+    shipping_column = first_existing_column(
+        product_rows,
+        ["Tipo de Despacho", "Centro de envío", "Centro de envio", "Forma de entrega"],
+    )
+
+    converted = pd.DataFrame(
+        {
+            "MELI_ID": product_rows["# de venta"],
+            "CB": product_rows["SKU"],
+            "CB alt": product_rows["SKU"],
+            "Nombre Producto": product_rows[title_column],
+            "Cant.": product_rows["Unidades"],
+            "Tipo de Despacho": product_rows[shipping_column] if shipping_column else "",
+        }
+    )
+    return converted
+
+
+def first_existing_column(dataframe: pd.DataFrame, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if candidate in dataframe.columns:
+            return candidate
+    return None
+
+
+def make_unique_headers(headers: list[str]) -> list[str]:
+    seen = {}
+    unique_headers = []
+    for header in headers:
+        header = str(header).strip()
+        if not header:
+            unique_headers.append("")
+            continue
+        count = seen.get(header, 0) + 1
+        seen[header] = count
+        unique_headers.append(header if count == 1 else f"{header}__{count}")
+    return unique_headers
+
+
+def read_excel_with_detected_header(uploaded_file) -> pd.DataFrame:
+    sheets = pd.read_excel(uploaded_file, sheet_name=None, header=None, dtype=str)
+    sheet = sheets.get("Ventas depuradas")
+    if sheet is None:
+        sheet = next(iter(sheets.values()))
+
+    header_row = None
+    for idx, row in sheet.iterrows():
+        values = {str(value).strip() for value in row.tolist() if pd.notna(value)}
+        if "MELI_ID" in values or "# de venta" in values:
+            header_row = idx
+            break
+
+    if header_row is None:
+        return pd.read_excel(uploaded_file, dtype=str)
+
+    headers = make_unique_headers(sheet.iloc[header_row].fillna("").astype(str).str.strip().tolist())
+    data = sheet.iloc[header_row + 1 :].copy()
+    data.columns = headers
+    data = data.loc[:, [column for column in data.columns if column]]
+    return data.reset_index(drop=True)
+
+
 def load_uploaded_orders(uploaded_file) -> pd.DataFrame:
     if uploaded_file is None:
         return sample_orders()
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
         return pd.read_csv(uploaded_file, dtype=str)
-    return pd.read_excel(uploaded_file, dtype=str)
+    return read_excel_with_detected_header(uploaded_file)
 
 
 def initialize_state(orders: pd.DataFrame) -> None:
