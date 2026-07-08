@@ -26,6 +26,10 @@ PRODUCT_STATES = {
     "Venta Full",
 }
 
+SILENT_VOICE_MESSAGES = {
+    "Producto correcto.",
+}
+
 
 def page_setup() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="M", layout="wide")
@@ -71,6 +75,8 @@ def set_last_message(message: str) -> None:
 
 
 def speak_once(message: str) -> None:
+    if message in SILENT_VOICE_MESSAGES:
+        return
     if not message or st.session_state.get("last_spoken_message") == message:
         return
     st.session_state.last_spoken_message = message
@@ -312,7 +318,7 @@ def process_order_scan(raw_order_id: str) -> None:
             set_last_message("Pedido ya ingresado.")
             return
         st.session_state.selected_order = order_id
-        set_last_message(f"Pedido seleccionado: {order_id}")
+        set_last_message("Pedido cargado.")
         return
 
     st.session_state.selected_order = None
