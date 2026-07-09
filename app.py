@@ -187,6 +187,27 @@ def auto_download_bytes(data: bytes, file_name: str, mime: str) -> None:
     )
 
 
+def focus_text_input(label: str) -> None:
+    safe_label = json.dumps(label, ensure_ascii=False)
+    components.html(
+        f"""
+        <script>
+        const label = {safe_label};
+        function focusInput() {{
+            const input = window.parent.document.querySelector(`input[aria-label="${{label}}"]`);
+            if (input) {{
+                input.focus();
+                input.select();
+            }}
+        }}
+        setTimeout(focusInput, 150);
+        setTimeout(focusInput, 500);
+        </script>
+        """,
+        height=0,
+    )
+
+
 def process_labels_pdf(pdf_bytes: bytes, output_name: str | None = None) -> dict:
     if not pdf_bytes:
         raise ValueError("MELI no entrego un PDF de etiquetas.")
@@ -885,6 +906,31 @@ def undo_last_scan() -> None:
     set_last_message("Última lectura deshecha.")
 
 
+def reset_day_state() -> None:
+    keys_to_clear = [
+        "orders",
+        "orders_fingerprint",
+        "scanned",
+        "scan_history",
+        "selected_order",
+        "meli_label_shipments",
+        "meli_shipments_table",
+        "meli_labels_pdf",
+        "meli_labels_raw_pdf",
+        "meli_labels_file_name",
+        "meli_labels_message",
+        "meli_labels_error",
+        "meli_labels_summary",
+        "meli_labels_auto_downloaded",
+        "last_message",
+        "last_spoken_message",
+    ]
+    for key in keys_to_clear:
+        st.session_state.pop(key, None)
+    st.session_state.order_input_counter = st.session_state.get("order_input_counter", 0) + 1
+    st.session_state.product_input_counter = st.session_state.get("product_input_counter", 0) + 1
+
+
 def status_table() -> pd.DataFrame:
     rows = []
     for order_id, group in st.session_state.orders.groupby("MELI_ID", sort=False):
@@ -898,6 +944,23 @@ def status_table() -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def status_table_style(dataframe: pd.DataFrame):
+    def color_estado(value):
+        text = str(value).strip().lower()
+        if text == "listo":
+            return "background-color: #d9f7d9; color: #0b6b0b; font-weight: 700"
+        if text == "pendiente":
+            return "background-color: #ffd9d9; color: #9b111e; font-weight: 700"
+        return ""
+
+    if dataframe.empty or "Estado" not in dataframe.columns:
+        return dataframe
+    styler = dataframe.style
+    if hasattr(styler, "map"):
+        return styler.map(color_estado, subset=["Estado"])
+    return styler.applymap(color_estado, subset=["Estado"])
 
 
 def detail_status_table() -> pd.DataFrame:
@@ -983,6 +1046,25 @@ def render_order_metrics() -> None:
     pending_col.metric("Pendientes", summary["pending"])
 
 
+def meli_update_window_status(now: datetime | None = None) -> tuple[bool, str]:
+    now = now or datetime.now(CHILE_TZ)
+    current_minutes = (now.hour * 60) + now.minute
+    start_minutes = (11 * 60) + 5
+    end_minutes = 15 * 60
+
+    if current_minutes < start_minutes:
+        return (
+            False,
+            f"La descarga MELI se habilita a las 11:05 hora Chile. Hora actual: {now.strftime('%H:%M')}.",
+        )
+    if current_minutes >= end_minutes:
+        return (
+            False,
+            f"La descarga MELI se bloquea desde las 15:00 hora Chile. Hora actual: {now.strftime('%H:%M')}.",
+        )
+    return True, f"Descarga MELI habilitada hasta las 15:00 hora Chile. Hora actual: {now.strftime('%H:%M')}."
+
+
 def render_home() -> None:
     st.subheader("Inicio")
     st.write(
@@ -995,7 +1077,13 @@ def render_home() -> None:
 def render_daily_sales() -> None:
     st.subheader("Ventas del día")
     st.write("Conexión MELI directa")
-    if st.button("Actualizar ventas y etiquetas desde MELI"):
+    can_update_meli, update_window_message = meli_update_window_status()
+    if can_update_meli:
+        st.info(update_window_message)
+    else:
+        st.warning(update_window_message)
+
+    if st.button("Actualizar ventas y etiquetas desde MELI", disabled=not can_update_meli):
         try:
             with st.spinner("Leyendo ventas y etiquetas desde MELI..."):
                 orders, shipment_ids, shipments_table = read_meli_daily_operation()
@@ -1032,11 +1120,34 @@ def render_daily_sales() -> None:
         )
         st.session_state.meli_labels_auto_downloaded = True
 
+    with st.expander("Modo prueba temporal: cargar archivo manual"):
+        st.caption("Solo para probar Control de pedidos y Control de carga cuando ya no se puede leer MELI.")
+        uploaded = st.file_uploader("Cargar ventas preparadas (.xlsx o .csv)", type=["xlsx", "csv"])
+        if uploaded is not None:
+            try:
+                orders = clean_orders(load_uploaded_orders(uploaded))
+                initialize_state(orders)
+                st.session_state.meli_label_shipments = []
+                st.session_state.meli_shipments_table = pd.DataFrame()
+                st.session_state.meli_labels_pdf = b""
+                st.session_state.meli_labels_raw_pdf = b""
+                st.session_state.meli_labels_file_name = ""
+                st.session_state.meli_labels_message = ""
+                st.session_state.meli_labels_error = ""
+                st.session_state.meli_labels_summary = {}
+                st.session_state.meli_labels_auto_downloaded = False
+                set_last_message("Ventas cargadas desde archivo de prueba.")
+                st.success("Archivo de prueba cargado.")
+                st.rerun()
+            except Exception as error:
+                st.error("No pude cargar el archivo de prueba.")
+                st.caption(str(error))
+
     try:
         if "orders" in st.session_state:
             orders = st.session_state.orders
         else:
-            st.info("Todavía no hay ventas cargadas. Usa el botón de MELI.")
+            st.info("Todavía no hay ventas cargadas. Usa el botón de MELI o el modo prueba temporal.")
             return
         summary = shipping_summary(orders)
         st.success(f"Pedidos cargados: {summary['total']} · Productos: {len(orders)}")
@@ -1100,17 +1211,20 @@ def render_order_control() -> None:
     if not selected:
         order_key = f"order_input_{st.session_state.order_input_counter}"
         order_scan = st.text_input("MELI ID del pedido", key=order_key, placeholder="Escanea o escribe el MELI ID")
+        focus_text_input("MELI ID del pedido")
         if order_scan:
             process_order_scan(order_scan)
             st.session_state.order_input_counter += 1
             st.rerun()
         st.divider()
         st.write("Resumen")
-        st.dataframe(status_table(), use_container_width=True, hide_index=True)
+        order_status = status_table()
+        st.dataframe(status_table_style(order_status), use_container_width=True, hide_index=True)
         return
 
     product_key = f"product_input_{st.session_state.product_input_counter}"
-    product_scan = st.text_input("Codigo del producto", key=product_key, placeholder="Escanea el producto")
+    product_scan = st.text_input("Código del producto", key=product_key, placeholder="Escanea el producto")
+    focus_text_input("Código del producto")
     if product_scan:
         process_product_scan(product_scan)
         st.session_state.product_input_counter += 1
@@ -1138,13 +1252,23 @@ def render_order_control() -> None:
 
     st.divider()
     st.write("Resumen")
-    st.dataframe(status_table(), use_container_width=True, hide_index=True)
+    order_status = status_table()
+    st.dataframe(status_table_style(order_status), use_container_width=True, hide_index=True)
 
 
 def render_load_control() -> None:
     st.subheader("Control de carga")
     st.caption("Segunda etapa: escanear cada paquete antes de subirlo al transporte.")
-    st.info("Todavía no implementado. Primero validamos Control de pedidos.")
+    st.info("Pendiente: implementar el escaneo final de paquetes cargados.")
+
+    st.divider()
+    st.subheader("Inicializar día")
+    st.warning("Esto borra las ventas cargadas, lecturas, etiquetas y avance del día en esta sesión.")
+    confirmation = st.text_input("Para inicializar escribe INICIALIZAR", key="reset_day_confirmation")
+    if st.button("Inicializar", disabled=confirmation.strip().upper() != "INICIALIZAR"):
+        reset_day_state()
+        st.success("Día inicializado. Vuelve a Ventas del día para cargar MELI nuevamente.")
+        st.rerun()
 
 
 def render_download_state() -> None:
@@ -1171,12 +1295,10 @@ def main() -> None:
 
     module = st.sidebar.radio(
         "Módulo",
-        ["Inicio", "Ventas del día", "Etiquetas", "Control de pedidos", "Control de carga"],
+        ["Ventas del día", "Etiquetas", "Control de pedidos", "Control de carga"],
     )
 
-    if module == "Inicio":
-        render_home()
-    elif module == "Ventas del día":
+    if module == "Ventas del día":
         render_daily_sales()
     elif module == "Etiquetas":
         render_labels()
