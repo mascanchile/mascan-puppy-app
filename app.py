@@ -416,8 +416,8 @@ def extract_order_item_sku(order_item: dict) -> str:
 
 
 def shipping_label_from_shipment(shipment: dict) -> str:
-    logistic_type = str(shipment.get("logistic_type") or "").lower()
-    mode = str(shipment.get("mode") or "").lower()
+    logistic_type = meli_logistic_type(shipment)
+    mode = str(shipment.get("mode") or "").strip().lower()
     if logistic_type == "fulfillment":
         return "MELI Full"
     if logistic_type == "self_service":
@@ -425,6 +425,30 @@ def shipping_label_from_shipment(shipment: dict) -> str:
     if "fulfillment" in mode:
         return "MELI Full"
     return "Colecta"
+
+
+def meli_logistic_type(source: dict) -> str:
+    logistic = source.get("logistic") or {}
+    shipping = source.get("shipping") or {}
+    tags = {str(tag).strip().lower() for tag in source.get("tags") or []}
+    shipping_tags = {str(tag).strip().lower() for tag in shipping.get("tags") or []} if isinstance(shipping, dict) else set()
+    logistic_type = str(
+        source.get("logistic_type")
+        or logistic.get("type")
+        or (shipping.get("logistic_type") if isinstance(shipping, dict) else "")
+        or ""
+    ).strip().lower()
+    mode = str(
+        source.get("mode")
+        or (shipping.get("mode") if isinstance(shipping, dict) else "")
+        or ""
+    ).strip().lower()
+    all_tags = tags | shipping_tags
+    if not logistic_type and ("self_service" in all_tags or "self_service_in" in all_tags):
+        return "self_service"
+    if not logistic_type and ("fulfillment" in all_tags or "fulfillment" in mode):
+        return "fulfillment"
+    return logistic_type
 
 
 def shipment_is_label_ready(shipment: dict) -> bool:
@@ -440,9 +464,8 @@ def shipping_label_from_order_and_shipment(order: dict, shipment: dict) -> str:
     if label != "Colecta":
         return label
 
-    shipping = order.get("shipping") or {}
-    logistic_type = str(shipping.get("logistic_type") or "").lower() if isinstance(shipping, dict) else ""
-    mode = str(shipping.get("mode") or "").lower() if isinstance(shipping, dict) else ""
+    logistic_type = meli_logistic_type(order)
+    mode = str((order.get("shipping") or {}).get("mode") or "").strip().lower()
     if logistic_type == "fulfillment" or "fulfillment" in mode:
         return "MELI Full"
     if logistic_type == "self_service":
@@ -1009,15 +1032,11 @@ def render_daily_sales() -> None:
         )
         st.session_state.meli_labels_auto_downloaded = True
 
-    uploaded = st.file_uploader("Respaldo manual: cargar ventas preparadas (.xlsx o .csv)", type=["xlsx", "csv"])
     try:
-        if uploaded is not None:
-            orders = clean_orders(load_uploaded_orders(uploaded))
-            initialize_state(orders)
-        elif "orders" in st.session_state:
+        if "orders" in st.session_state:
             orders = st.session_state.orders
         else:
-            st.info("Todavía no hay ventas cargadas. Usa el botón de MELI o carga un archivo manual.")
+            st.info("Todavía no hay ventas cargadas. Usa el botón de MELI.")
             return
         summary = shipping_summary(orders)
         st.success(f"Pedidos cargados: {summary['total']} · Productos: {len(orders)}")
@@ -1028,9 +1047,6 @@ def render_daily_sales() -> None:
         full_col.metric("Full", summary["full"])
         products_col.metric("Productos", len(orders))
         st.dataframe(orders, use_container_width=True, hide_index=True)
-        if "meli_shipments_table" in st.session_state and not st.session_state.meli_shipments_table.empty:
-            with st.expander("Ver envíos y etiquetas MELI"):
-                st.dataframe(st.session_state.meli_shipments_table, use_container_width=True, hide_index=True)
     except Exception as error:
         st.error("No pude cargar las ventas.")
         st.caption(str(error))
@@ -1058,34 +1074,8 @@ def render_labels() -> None:
             file_name=st.session_state.get("meli_labels_file_name") or "Etiquetas_MELI.pdf",
             mime="application/pdf",
         )
-        if st.session_state.get("meli_labels_raw_pdf"):
-            with st.expander("PDF original MELI"):
-                st.download_button(
-                    "Descargar PDF original sin depurar",
-                    data=st.session_state.meli_labels_raw_pdf,
-                    file_name="Etiquetas_MELI_original.pdf",
-                    mime="application/pdf",
-                )
     else:
         st.info("Primero usa `Actualizar ventas y etiquetas desde MELI` en Ventas del dia.")
-
-    uploaded = st.file_uploader("Respaldo manual: cargar PDF de etiquetas", type=["pdf"])
-    if uploaded is not None:
-        try:
-            raw_pdf = uploaded.read()
-            output_name = f"Etiquetas_MELI_depuradas_{datetime.now(CHILE_TZ).strftime('%Y-%m-%d_%H%M')}.pdf"
-            processed = process_labels_pdf(raw_pdf, output_name)
-            st.session_state.meli_labels_raw_pdf = raw_pdf
-            st.session_state.meli_labels_pdf = processed["pdf_bytes"]
-            st.session_state.meli_labels_file_name = output_name
-            st.session_state.meli_labels_message = processed.get("mensaje", "")
-            st.session_state.meli_labels_summary = processed.get("resumen", {})
-            st.session_state.meli_labels_auto_downloaded = False
-            st.success(f"PDF cargado y depurado: {uploaded.name}")
-            st.rerun()
-        except Exception as error:
-            st.error("No pude depurar el PDF cargado.")
-            st.caption(str(error))
 
 def render_order_control() -> None:
     st.subheader("Control de pedidos")
