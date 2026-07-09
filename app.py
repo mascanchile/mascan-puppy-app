@@ -382,7 +382,7 @@ def shipping_label_from_shipment(shipment: dict) -> str:
     if logistic_type == "fulfillment":
         return "MELI Full"
     if logistic_type == "self_service":
-        return "Mercado EnvÃ­os Flex"
+        return "Mercado Envíos Flex"
     if "fulfillment" in mode:
         return "MELI Full"
     return "Colecta"
@@ -483,7 +483,7 @@ def sample_orders() -> pd.DataFrame:
                 "CB alt": "SD06000140619",
                 "Nombre Producto": "BW 00014-Plato huellitas-S-Celeste",
                 "Cant.": 1,
-                "Tipo de Despacho": "Mercado EnvÃ­os Flex",
+                "Tipo de Despacho": "Mercado Envíos Flex",
             },
             {
                 "MELI_ID": "2000013906247377",
@@ -491,7 +491,7 @@ def sample_orders() -> pd.DataFrame:
                 "CB alt": "SD06000140625",
                 "Nombre Producto": "BW 00014-Plato huellitas-S-Rosado",
                 "Cant.": 1,
-                "Tipo de Despacho": "Mercado EnvÃ­os Flex",
+                "Tipo de Despacho": "Mercado Envíos Flex",
             },
         ]
     )
@@ -527,7 +527,7 @@ def convert_mascan_daily_sales(dataframe: pd.DataFrame) -> pd.DataFrame:
     dataframe = dataframe.copy()
     shipping_column = first_existing_column(
         dataframe,
-        ["Tipo de Despacho", "Centro de envÃ­o", "Centro de envio", "Forma de entrega"],
+        ["Tipo de Despacho", "Centro de envío", "Centro de envio", "Forma de entrega"],
     )
     dataframe["__puppy_meli_id"] = dataframe["# de venta"].map(normalize_code)
     dataframe["__puppy_shipping"] = dataframe[shipping_column] if shipping_column else ""
@@ -555,9 +555,9 @@ def convert_mascan_daily_sales(dataframe: pd.DataFrame) -> pd.DataFrame:
 
     product_rows = dataframe[dataframe["Estado"].isin(PRODUCT_STATES)].copy()
     if product_rows.empty:
-        raise ValueError("No encontrÃ© filas de productos en el archivo.")
+        raise ValueError("No encontré filas de productos en el archivo.")
 
-    title_column = "TÃ­tulo de la publicaciÃ³n" if "TÃ­tulo de la publicaciÃ³n" in product_rows.columns else "SKU"
+    title_column = "Título de la publicación" if "Título de la publicación" in product_rows.columns else "SKU"
 
     converted = pd.DataFrame(
         {
@@ -748,9 +748,9 @@ def process_product_scan(raw_code: str) -> None:
     if is_order_complete(order_id):
         st.session_state.selected_order = None
         if all_orders_complete():
-            set_last_message("Todos los pedidos fueron revisados con Ã©xito.")
+            set_last_message("Todos los pedidos fueron revisados con éxito.")
         else:
-            set_last_message("Pedido terminado con Ã©xito.")
+            set_last_message("Pedido terminado con éxito.")
     else:
         set_last_message("Producto correcto.")
 
@@ -769,7 +769,7 @@ def undo_last_scan() -> None:
     if scanned[code] == 0:
         scanned.pop(code, None)
     st.session_state.selected_order = order_id
-    set_last_message("Ãšltima lectura deshecha.")
+    set_last_message("Última lectura deshecha.")
 
 
 def status_table() -> pd.DataFrame:
@@ -873,15 +873,15 @@ def render_order_metrics() -> None:
 def render_home() -> None:
     st.subheader("Inicio")
     st.write(
-        "Esta es la versiÃ³n mÃ­nima de MasCan Puppy APP. Primero la usaremos con archivo cargado; "
-        "despuÃ©s conectamos MELI y etiquetas directamente."
+        "Esta es la versión mínima de MasCan Puppy APP. Primero la usaremos con archivo cargado; "
+        "después conectamos MELI y etiquetas directamente."
     )
-    st.info("La pistola lectora funciona como teclado: escanea y presiona Enter automÃ¡ticamente.")
+    st.info("La pistola lectora funciona como teclado: escanea y presiona Enter automáticamente.")
 
 
 def render_daily_sales() -> None:
-    st.subheader("Ventas del dÃ­a")
-    st.write("ConexiÃ³n MELI directa")
+    st.subheader("Ventas del día")
+    st.write("Conexión MELI directa")
     if st.button("Actualizar ventas y etiquetas desde MELI"):
         try:
             with st.spinner("Leyendo ventas y etiquetas desde MELI..."):
@@ -906,7 +906,7 @@ def render_daily_sales() -> None:
                     st.session_state.meli_labels_message = processed.get("mensaje", "")
                     st.session_state.meli_labels_summary = processed.get("resumen", {})
                 set_last_message("Ventas cargadas desde MELI.")
-                st.success("Ventas y etiquetas leÃ­das desde MELI.")
+                st.success("Ventas y etiquetas leídas desde MELI.")
         except Exception as error:
             st.error("No pude leer ventas o etiquetas desde MELI.")
             st.caption(str(error))
@@ -930,7 +930,7 @@ def render_daily_sales() -> None:
             orders = sample_orders()
             initialize_state(orders)
         summary = shipping_summary(orders)
-        st.success(f"Pedidos cargados: {summary['total']} Â· Productos: {len(orders)}")
+        st.success(f"Pedidos cargados: {summary['total']} · Productos: {len(orders)}")
         total_col, flex_col, colecta_col, full_col, products_col = st.columns(5)
         total_col.metric("Pedidos", summary["total"])
         flex_col.metric("Flex", summary["flex"])
@@ -939,7 +939,7 @@ def render_daily_sales() -> None:
         products_col.metric("Productos", len(orders))
         st.dataframe(orders, use_container_width=True, hide_index=True)
         if "meli_shipments_table" in st.session_state and not st.session_state.meli_shipments_table.empty:
-            with st.expander("Ver envÃ­os y etiquetas MELI"):
+            with st.expander("Ver envíos y etiquetas MELI"):
                 st.dataframe(st.session_state.meli_shipments_table, use_container_width=True, hide_index=True)
     except Exception as error:
         st.error("No pude cargar las ventas.")
@@ -1011,7 +1011,7 @@ def render_order_control() -> None:
     speak_once(current_message)
     render_order_metrics()
 
-    if st.button("Deshacer Ãºltima lectura", disabled=not st.session_state.get("scan_history")):
+    if st.button("Deshacer última lectura", disabled=not st.session_state.get("scan_history")):
         undo_last_scan()
         st.rerun()
 
@@ -1049,7 +1049,7 @@ def render_order_control() -> None:
                     "CB": cb,
                     "Producto": row["Nombre Producto"],
                     "Esperado": expected,
-                    "LeÃ­do": read,
+                    "Leído": read,
                     "Pendiente": max(expected - read, 0),
                 }
             )
@@ -1063,7 +1063,7 @@ def render_order_control() -> None:
 def render_load_control() -> None:
     st.subheader("Control de carga")
     st.caption("Segunda etapa: escanear cada paquete antes de subirlo al transporte.")
-    st.info("TodavÃ­a no implementado. Primero validamos Control de pedidos.")
+    st.info("Todavía no implementado. Primero validamos Control de pedidos.")
 
 
 def render_download_state() -> None:
@@ -1089,13 +1089,13 @@ def main() -> None:
         return
 
     module = st.sidebar.radio(
-        "MÃ³dulo",
-        ["Inicio", "Ventas del dÃ­a", "Etiquetas", "Control de pedidos", "Control de carga"],
+        "Módulo",
+        ["Inicio", "Ventas del día", "Etiquetas", "Control de pedidos", "Control de carga"],
     )
 
     if module == "Inicio":
         render_home()
-    elif module == "Ventas del dÃ­a":
+    elif module == "Ventas del día":
         render_daily_sales()
     elif module == "Etiquetas":
         render_labels()
