@@ -774,7 +774,7 @@ def initialize_state(orders: pd.DataFrame) -> None:
     st.session_state.loaded_packages = []
     st.session_state.load_history = []
     st.session_state.selected_order = None
-    set_last_message("Pedidos cargados.")
+    set_last_message("Ventas cargadas.")
 
 
 def order_rows(order_id: str) -> pd.DataFrame:
@@ -898,7 +898,7 @@ def process_product_scan(raw_code: str) -> None:
     if is_order_complete(order_id):
         st.session_state.selected_order = None
         if all_orders_complete():
-            set_last_message("Todos los pedidos fueron revisados con éxito.")
+            set_last_message("Pedido terminado con éxito. Todos los pedidos fueron revisados con éxito.")
         else:
             set_last_message("Pedido terminado con éxito.")
     else:
@@ -929,7 +929,7 @@ def process_package_scan(raw_order_id: str) -> None:
 
     all_orders = set(st.session_state.orders["MELI_ID"].astype(str))
     if order_id not in all_orders:
-        set_last_message("Paquete no existe.")
+        set_last_message("El paquete no existe.")
         return
 
     if not is_order_complete(order_id):
@@ -938,7 +938,7 @@ def process_package_scan(raw_order_id: str) -> None:
 
     loaded = st.session_state.setdefault("loaded_packages", [])
     if order_id in loaded:
-        set_last_message("Paquete ya cargado.")
+        set_last_message("Este paquete ya fue cargado.")
         return
 
     loaded.append(order_id)
@@ -1201,7 +1201,8 @@ def render_daily_sales() -> None:
                     st.session_state.meli_labels_file_name = label_file_name
                     st.session_state.meli_labels_message = processed.get("mensaje", "")
                     st.session_state.meli_labels_summary = processed.get("resumen", {})
-                set_last_message("Ventas cargadas desde MELI.")
+                set_last_message("Ventas cargadas.")
+                speak_once("Ventas cargadas.")
                 st.success("Ventas y etiquetas leídas desde MELI.")
         except Exception as error:
             st.error("No pude leer ventas o etiquetas desde MELI.")
@@ -1231,9 +1232,9 @@ def render_daily_sales() -> None:
                 st.session_state.meli_labels_error = ""
                 st.session_state.meli_labels_summary = {}
                 st.session_state.meli_labels_auto_downloaded = False
-                set_last_message("Ventas cargadas desde archivo de prueba.")
+                set_last_message("Ventas cargadas.")
+                speak_once("Ventas cargadas.")
                 st.success("Archivo de prueba cargado.")
-                st.rerun()
             except Exception as error:
                 st.error("No pude cargar el archivo de prueba.")
                 st.caption(str(error))
@@ -1301,6 +1302,14 @@ def render_order_control() -> None:
     if st.button("Deshacer última lectura", disabled=not st.session_state.get("scan_history")):
         undo_last_scan()
         st.rerun()
+
+    if all_orders_complete():
+        st.success("Todos los pedidos fueron revisados con éxito.")
+        st.divider()
+        st.write("Resumen")
+        order_status = status_table()
+        st.dataframe(status_table_style(order_status), use_container_width=True, hide_index=True)
+        return
 
     selected = st.session_state.get("selected_order")
     if not selected:
