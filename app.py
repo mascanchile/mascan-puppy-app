@@ -133,13 +133,16 @@ def code_variants(value) -> set[str]:
 
 def set_last_message(message: str) -> None:
     st.session_state.last_message = message
+    st.session_state.last_message_id = time()
 
 
 def speak_once(message: str) -> None:
     if message in SILENT_VOICE_MESSAGES:
         return
-    if not message or st.session_state.get("last_spoken_message") == message:
+    message_id = st.session_state.get("last_message_id", message)
+    if not message or st.session_state.get("last_spoken_message_id") == message_id:
         return
+    st.session_state.last_spoken_message_id = message_id
     st.session_state.last_spoken_message = message
     safe_message = json.dumps(message, ensure_ascii=False)
     components.html(
@@ -950,7 +953,7 @@ def process_package_scan(raw_order_id: str) -> None:
         summary = shipping_summary(st.session_state.orders)
         message = (
             "Todos los paquetes fueron cargados con éxito. "
-            f"Hay {summary['flex']} Flex, {summary['colecta']} Colecta y {summary['full']} Full."
+            f"Hay {summary['flex']} Flex y {summary['colecta']} Colecta."
         )
         set_last_message(message)
     else:
@@ -976,7 +979,9 @@ def reset_day_state() -> None:
         "meli_labels_summary",
         "meli_labels_auto_downloaded",
         "last_message",
+        "last_message_id",
         "last_spoken_message",
+        "last_spoken_message_id",
     ]
     for key in keys_to_clear:
         st.session_state.pop(key, None)
