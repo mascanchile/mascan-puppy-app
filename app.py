@@ -32,6 +32,7 @@ MELI_API_BASE_URL = "https://api.mercadolibre.com"
 MELI_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 MELI_SSL_CONTEXT = ssl.create_default_context()
 CHILE_TZ = ZoneInfo("America/Santiago")
+STATE_PATH = Path("data") / "puppy_day_state.json"
 
 REQUIRED_COLUMNS = [
     "MELI_ID",
@@ -131,9 +132,98 @@ def code_variants(value) -> set[str]:
     return variants
 
 
+def encode_bytes(data: bytes | None) -> str:
+    if not data:
+        return ""
+    return base64.b64encode(data).decode("ascii")
+
+
+def decode_bytes(data: str | None) -> bytes:
+    if not data:
+        return b""
+    try:
+        return base64.b64decode(data.encode("ascii"))
+    except Exception:
+        return b""
+
+
+def save_day_state() -> None:
+    if "orders" not in st.session_state:
+        return
+    try:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shipments_table = st.session_state.get("meli_shipments_table", pd.DataFrame())
+        if isinstance(shipments_table, pd.DataFrame):
+            shipments_records = shipments_table.fillna("").to_dict("records")
+        else:
+            shipments_records = []
+
+        state = {
+            "saved_at": datetime.now(CHILE_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "orders_fingerprint": st.session_state.get("orders_fingerprint", ""),
+            "orders": st.session_state.orders.fillna("").to_dict("records"),
+            "scanned": st.session_state.get("scanned", {}),
+            "scan_history": st.session_state.get("scan_history", []),
+            "selected_order": st.session_state.get("selected_order"),
+            "loaded_packages": st.session_state.get("loaded_packages", []),
+            "load_history": st.session_state.get("load_history", []),
+            "meli_label_shipments": st.session_state.get("meli_label_shipments", []),
+            "meli_shipments_table": shipments_records,
+            "meli_labels_pdf": encode_bytes(st.session_state.get("meli_labels_pdf", b"")),
+            "meli_labels_raw_pdf": encode_bytes(st.session_state.get("meli_labels_raw_pdf", b"")),
+            "meli_labels_file_name": st.session_state.get("meli_labels_file_name", ""),
+            "meli_labels_message": st.session_state.get("meli_labels_message", ""),
+            "meli_labels_error": st.session_state.get("meli_labels_error", ""),
+            "meli_labels_summary": st.session_state.get("meli_labels_summary", {}),
+            "meli_labels_auto_downloaded": st.session_state.get("meli_labels_auto_downloaded", False),
+            "last_message": st.session_state.get("last_message", ""),
+            "last_message_id": st.session_state.get("last_message_id", ""),
+        }
+        STATE_PATH.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        return
+
+
+def restore_day_state() -> bool:
+    if "orders" in st.session_state or not STATE_PATH.exists():
+        return False
+    try:
+        state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        orders = pd.DataFrame(state.get("orders", []))
+        if orders.empty:
+            return False
+        orders = clean_orders(orders)
+        st.session_state.orders = orders
+        st.session_state.orders_fingerprint = state.get(
+            "orders_fingerprint",
+            "|".join(orders["MELI_ID"].astype(str).tolist()) + f":{len(orders)}",
+        )
+        st.session_state.scanned = state.get("scanned", {})
+        st.session_state.scan_history = state.get("scan_history", [])
+        st.session_state.selected_order = state.get("selected_order")
+        st.session_state.loaded_packages = state.get("loaded_packages", [])
+        st.session_state.load_history = state.get("load_history", [])
+        st.session_state.meli_label_shipments = state.get("meli_label_shipments", [])
+        st.session_state.meli_shipments_table = pd.DataFrame(state.get("meli_shipments_table", []))
+        st.session_state.meli_labels_pdf = decode_bytes(state.get("meli_labels_pdf"))
+        st.session_state.meli_labels_raw_pdf = decode_bytes(state.get("meli_labels_raw_pdf"))
+        st.session_state.meli_labels_file_name = state.get("meli_labels_file_name", "")
+        st.session_state.meli_labels_message = state.get("meli_labels_message", "")
+        st.session_state.meli_labels_error = state.get("meli_labels_error", "")
+        st.session_state.meli_labels_summary = state.get("meli_labels_summary", {})
+        st.session_state.meli_labels_auto_downloaded = state.get("meli_labels_auto_downloaded", True)
+        st.session_state.last_message = "Estado del día recuperado."
+        st.session_state.last_message_id = state.get("last_message_id", time())
+        st.session_state.last_spoken_message_id = st.session_state.last_message_id
+        return True
+    except Exception:
+        return False
+
+
 def set_last_message(message: str) -> None:
     st.session_state.last_message = message
     st.session_state.last_message_id = time()
+    save_day_state()
 
 
 def speak_once(message: str) -> None:
@@ -985,6 +1075,11 @@ def reset_day_state() -> None:
     ]
     for key in keys_to_clear:
         st.session_state.pop(key, None)
+    try:
+        if STATE_PATH.exists():
+            STATE_PATH.unlink()
+    except Exception:
+        pass
     st.session_state.order_input_counter = st.session_state.get("order_input_counter", 0) + 1
     st.session_state.product_input_counter = st.session_state.get("product_input_counter", 0) + 1
     st.session_state.package_input_counter = st.session_state.get("package_input_counter", 0) + 1
@@ -1215,35 +1310,13 @@ def render_daily_sales() -> None:
             "application/pdf",
         )
         st.session_state.meli_labels_auto_downloaded = True
-
-    with st.expander("Modo prueba temporal: cargar archivo manual"):
-        st.caption("Solo para probar Control de pedidos y Control de carga cuando ya no se puede leer MELI.")
-        uploaded = st.file_uploader("Cargar ventas preparadas (.xlsx o .csv)", type=["xlsx", "csv"])
-        if uploaded is not None:
-            try:
-                orders = clean_orders(load_uploaded_orders(uploaded))
-                initialize_state(orders)
-                st.session_state.meli_label_shipments = []
-                st.session_state.meli_shipments_table = pd.DataFrame()
-                st.session_state.meli_labels_pdf = b""
-                st.session_state.meli_labels_raw_pdf = b""
-                st.session_state.meli_labels_file_name = ""
-                st.session_state.meli_labels_message = ""
-                st.session_state.meli_labels_error = ""
-                st.session_state.meli_labels_summary = {}
-                st.session_state.meli_labels_auto_downloaded = False
-                set_last_message("Ventas cargadas.")
-                speak_once("Ventas cargadas.")
-                st.success("Archivo de prueba cargado.")
-            except Exception as error:
-                st.error("No pude cargar el archivo de prueba.")
-                st.caption(str(error))
+        save_day_state()
 
     try:
         if "orders" in st.session_state:
             orders = st.session_state.orders
         else:
-            st.info("Todavía no hay ventas cargadas. Usa el botón de MELI o el modo prueba temporal.")
+            st.info("Todavía no hay ventas cargadas. Usa el botón de MELI.")
             return
         summary = shipping_summary(orders)
         st.success(f"Pedidos cargados: {summary['total']} · Productos: {len(orders)}")
@@ -1439,6 +1512,7 @@ def main() -> None:
     page_setup()
     if not require_app_password():
         return
+    restore_day_state()
 
     module = st.sidebar.radio(
         "Módulo",
