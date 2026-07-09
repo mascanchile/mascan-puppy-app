@@ -768,6 +768,8 @@ def initialize_state(orders: pd.DataFrame) -> None:
     st.session_state.orders = orders
     st.session_state.scanned = {}
     st.session_state.scan_history = []
+    st.session_state.loaded_packages = []
+    st.session_state.load_history = []
     st.session_state.selected_order = None
     set_last_message("Pedidos cargados.")
 
@@ -822,6 +824,17 @@ def all_orders_complete() -> bool:
         return False
     order_ids = st.session_state.orders["MELI_ID"].astype(str).unique()
     return len(order_ids) > 0 and all(is_order_complete(order_id) for order_id in order_ids)
+
+
+def loaded_package_ids() -> set[str]:
+    return set(st.session_state.setdefault("loaded_packages", []))
+
+
+def all_packages_loaded() -> bool:
+    if "orders" not in st.session_state:
+        return False
+    order_ids = set(st.session_state.orders["MELI_ID"].astype(str).unique())
+    return len(order_ids) > 0 and order_ids.issubset(loaded_package_ids())
 
 
 def product_exists_anywhere(code: str) -> bool:
@@ -906,12 +919,52 @@ def undo_last_scan() -> None:
     set_last_message("Última lectura deshecha.")
 
 
+def process_package_scan(raw_order_id: str) -> None:
+    order_id = normalize_code(raw_order_id)
+    if not order_id:
+        return
+
+    all_orders = set(st.session_state.orders["MELI_ID"].astype(str))
+    if order_id not in all_orders:
+        set_last_message("Paquete no existe.")
+        return
+
+    if not is_order_complete(order_id):
+        set_last_message("Pedido pendiente de revisión.")
+        return
+
+    loaded = st.session_state.setdefault("loaded_packages", [])
+    if order_id in loaded:
+        set_last_message("Paquete ya cargado.")
+        return
+
+    loaded.append(order_id)
+    st.session_state.setdefault("load_history", []).append(
+        {
+            "MELI_ID": order_id,
+            "fecha_hora": datetime.now(CHILE_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    )
+
+    if all_packages_loaded():
+        summary = shipping_summary(st.session_state.orders)
+        message = (
+            "Todos los paquetes fueron cargados con éxito. "
+            f"Hay {summary['flex']} Flex, {summary['colecta']} Colecta y {summary['full']} Full."
+        )
+        set_last_message(message)
+    else:
+        set_last_message("Paquete cargado.")
+
+
 def reset_day_state() -> None:
     keys_to_clear = [
         "orders",
         "orders_fingerprint",
         "scanned",
         "scan_history",
+        "loaded_packages",
+        "load_history",
         "selected_order",
         "meli_label_shipments",
         "meli_shipments_table",
@@ -929,6 +982,7 @@ def reset_day_state() -> None:
         st.session_state.pop(key, None)
     st.session_state.order_input_counter = st.session_state.get("order_input_counter", 0) + 1
     st.session_state.product_input_counter = st.session_state.get("product_input_counter", 0) + 1
+    st.session_state.package_input_counter = st.session_state.get("package_input_counter", 0) + 1
 
 
 def status_table() -> pd.DataFrame:
@@ -951,16 +1005,19 @@ def status_table_style(dataframe: pd.DataFrame):
         text = str(value).strip().lower()
         if text == "listo":
             return "background-color: #d9f7d9; color: #0b6b0b; font-weight: 700"
+        if text == "cargado":
+            return "background-color: #d9f7d9; color: #0b6b0b; font-weight: 700"
         if text == "pendiente":
             return "background-color: #ffd9d9; color: #9b111e; font-weight: 700"
         return ""
 
-    if dataframe.empty or "Estado" not in dataframe.columns:
+    status_columns = [column for column in dataframe.columns if "Estado" in str(column)]
+    if dataframe.empty or not status_columns:
         return dataframe
     styler = dataframe.style
     if hasattr(styler, "map"):
-        return styler.map(color_estado, subset=["Estado"])
-    return styler.applymap(color_estado, subset=["Estado"])
+        return styler.map(color_estado, subset=status_columns)
+    return styler.applymap(color_estado, subset=status_columns)
 
 
 def detail_status_table() -> pd.DataFrame:
@@ -1008,6 +1065,39 @@ def scan_history_table() -> pd.DataFrame:
                 "MELI_ID": order_id,
                 "CB": code,
                 "Nombre Producto": product_name,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def package_status_table() -> pd.DataFrame:
+    rows = []
+    loaded = loaded_package_ids()
+    for order_id, group in st.session_state.orders.groupby("MELI_ID", sort=False):
+        order_id = str(order_id)
+        order_ready = is_order_complete(order_id)
+        package_loaded = order_id in loaded
+        rows.append(
+            {
+                "MELI_ID": order_id,
+                "Productos": int(len(group)),
+                "Unidades": int(group["Cant."].sum()),
+                "Tipo de Despacho": group["Tipo de Despacho"].iloc[0],
+                "Estado pedido": "Listo" if order_ready else "Pendiente",
+                "Estado paquete": "Cargado" if package_loaded else "Pendiente",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def load_history_table() -> pd.DataFrame:
+    rows = []
+    for index, item in enumerate(st.session_state.get("load_history", []), start=1):
+        rows.append(
+            {
+                "N": index,
+                "MELI_ID": item.get("MELI_ID", ""),
+                "Fecha y hora": item.get("fecha_hora", ""),
             }
         )
     return pd.DataFrame(rows)
@@ -1256,10 +1346,51 @@ def render_order_control() -> None:
     st.dataframe(status_table_style(order_status), use_container_width=True, hide_index=True)
 
 
-def render_load_control() -> None:
-    st.subheader("Control de carga")
-    st.caption("Segunda etapa: escanear cada paquete antes de subirlo al transporte.")
-    st.info("Pendiente: implementar el escaneo final de paquetes cargados.")
+def render_package_metrics() -> None:
+    status = package_status_table()
+    summary = shipping_summary(st.session_state.orders)
+    loaded_count = int((status["Estado paquete"] == "Cargado").sum()) if not status.empty else 0
+    pending_count = summary["total"] - loaded_count
+    total_col, flex_col, colecta_col, full_col, loaded_col, pending_col = st.columns(6)
+    total_col.metric("Paquetes", summary["total"])
+    flex_col.metric("Flex", summary["flex"])
+    colecta_col.metric("Colecta", summary["colecta"])
+    full_col.metric("Full", summary["full"])
+    loaded_col.metric("Cargados", loaded_count)
+    pending_col.metric("Pendientes", pending_count)
+
+
+def render_package_control() -> None:
+    st.subheader("Control de paquetes")
+    st.caption("Escanea cada etiqueta antes de subir el paquete al transporte.")
+    if "orders" not in st.session_state:
+        st.info("Primero carga las ventas del día.")
+        return
+    if "package_input_counter" not in st.session_state:
+        st.session_state.package_input_counter = 0
+
+    current_message = st.session_state.get("last_message", "Listo para escanear paquetes.")
+    st.info(current_message)
+    speak_once(current_message)
+    render_package_metrics()
+
+    package_key = f"package_input_{st.session_state.package_input_counter}"
+    package_scan = st.text_input("MELI ID del paquete", key=package_key, placeholder="Escanea el MELI ID de la etiqueta")
+    focus_text_input("MELI ID del paquete")
+    if package_scan:
+        process_package_scan(package_scan)
+        st.session_state.package_input_counter += 1
+        st.rerun()
+
+    st.divider()
+    st.write("Resumen")
+    status = package_status_table()
+    st.dataframe(status_table_style(status), use_container_width=True, hide_index=True)
+
+    loaded_history = load_history_table()
+    if not loaded_history.empty:
+        with st.expander("Ver paquetes cargados"):
+            st.dataframe(loaded_history, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("Inicializar día")
@@ -1280,6 +1411,8 @@ def render_download_state() -> None:
         status_table().to_excel(writer, index=False, sheet_name="Estado")
         detail_status_table().to_excel(writer, index=False, sheet_name="Detalle")
         scan_history_table().to_excel(writer, index=False, sheet_name="Lecturas")
+        package_status_table().to_excel(writer, index=False, sheet_name="Paquetes")
+        load_history_table().to_excel(writer, index=False, sheet_name="Carga paquetes")
     st.download_button(
         "Descargar estado Excel",
         data=output.getvalue(),
@@ -1295,7 +1428,7 @@ def main() -> None:
 
     module = st.sidebar.radio(
         "Módulo",
-        ["Ventas del día", "Etiquetas", "Control de pedidos", "Control de carga"],
+        ["Ventas del día", "Etiquetas", "Control de pedidos", "Control de paquetes"],
     )
 
     if module == "Ventas del día":
@@ -1304,8 +1437,8 @@ def main() -> None:
         render_labels()
     elif module == "Control de pedidos":
         render_order_control()
-    elif module == "Control de carga":
-        render_load_control()
+    elif module == "Control de paquetes":
+        render_package_control()
 
     st.sidebar.divider()
     render_download_state()
