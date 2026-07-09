@@ -48,6 +48,45 @@ PRODUCT_STATES = {
     "Venta Full",
 }
 
+PACK_COMPONENTS = {
+    "1909000061510-Pack-x4": [
+        {
+            "CB": "1909000061510",
+            "CB alt": "1909000061510",
+            "Nombre Producto": "HG 00006-Bolsas sanitarias biodeg. 6x20-STD-Verde",
+            "Cant.": 4,
+        }
+    ],
+    "0764451134799Packx2": [
+        {
+            "CB": "0764451134799",
+            "CB alt": "0764451134799",
+            "Nombre Producto": "HG 50003-Arena Sanitaria-14KG-Lavanda",
+            "Cant.": 2,
+        }
+    ],
+    "0764451134799+base+pala-pack": [
+        {
+            "CB": "0764451134799",
+            "CB alt": "0764451134799",
+            "Nombre Producto": "HG 50003-Arena Sanitaria-14KG-Lavanda",
+            "Cant.": 1,
+        },
+        {
+            "CB": "09500021503",
+            "CB alt": "0764451134393",
+            "Nombre Producto": "HG 50002-Base para Pala Sanitaria-STD-Blanco",
+            "Cant.": 1,
+        },
+        {
+            "CB": "SD09500011503",
+            "CB alt": "0764451134386",
+            "Nombre Producto": "HG 50001-Pala sanitaria para gatos-STD-Blanco",
+            "Cant.": 1,
+        },
+    ],
+}
+
 SILENT_VOICE_MESSAGES = {
     "Producto correcto.",
 }
@@ -396,6 +435,49 @@ def shipment_is_label_ready(shipment: dict) -> bool:
     return substatus in {"ready_to_print", "printed"} or bool(shipment.get("date_first_printed"))
 
 
+def shipping_label_from_order_and_shipment(order: dict, shipment: dict) -> str:
+    label = shipping_label_from_shipment(shipment)
+    if label != "Colecta":
+        return label
+
+    shipping = order.get("shipping") or {}
+    logistic_type = str(shipping.get("logistic_type") or "").lower() if isinstance(shipping, dict) else ""
+    mode = str(shipping.get("mode") or "").lower() if isinstance(shipping, dict) else ""
+    if logistic_type == "fulfillment" or "fulfillment" in mode:
+        return "MELI Full"
+    if logistic_type == "self_service":
+        return "Mercado Envíos Flex"
+    return label
+
+
+def rows_for_order_item(display_id: str, sku: str, title: str, quantity: int, shipping_type: str) -> list[dict]:
+    if sku in PACK_COMPONENTS:
+        rows = []
+        for component in PACK_COMPONENTS[sku]:
+            rows.append(
+                {
+                    "MELI_ID": display_id,
+                    "CB": component["CB"],
+                    "CB alt": component["CB alt"],
+                    "Nombre Producto": component["Nombre Producto"],
+                    "Cant.": int(component["Cant."]) * quantity,
+                    "Tipo de Despacho": shipping_type,
+                }
+            )
+        return rows
+
+    return [
+        {
+            "MELI_ID": display_id,
+            "CB": sku,
+            "CB alt": sku,
+            "Nombre Producto": title,
+            "Cant.": quantity,
+            "Tipo de Despacho": shipping_type,
+        }
+    ]
+
+
 def read_meli_daily_operation(max_pages: int = 4, page_size: int = 50) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
     rows = []
     label_shipments = []
@@ -415,6 +497,7 @@ def read_meli_daily_operation(max_pages: int = 4, page_size: int = 50) -> tuple[
             display_id = order_display_id(order)
             shipment_ids = order_shipment_ids(order)
             shipment_details = []
+            ready_shipments = []
             for shipment_id in shipment_ids:
                 if shipment_id not in shipment_cache:
                     try:
@@ -424,7 +507,10 @@ def read_meli_daily_operation(max_pages: int = 4, page_size: int = 50) -> tuple[
                 shipment = shipment_cache.get(shipment_id) or {}
                 if shipment:
                     shipment_details.append(shipment)
-                    if shipment_is_label_ready(shipment) and shipment_id not in label_shipments:
+                    label_ready = shipment_is_label_ready(shipment)
+                    if label_ready:
+                        ready_shipments.append(shipment)
+                    if label_ready and shipment_id not in label_shipments:
                         label_shipments.append(shipment_id)
                     shipment_rows.append(
                         {
@@ -432,33 +518,37 @@ def read_meli_daily_operation(max_pages: int = 4, page_size: int = 50) -> tuple[
                             "shipment_id": shipment_id,
                             "estado": shipment.get("status", ""),
                             "subestado": shipment.get("substatus", ""),
-                            "despacho": shipping_label_from_shipment(shipment),
-                            "etiqueta": "Disponible" if shipment_is_label_ready(shipment) else "No disponible",
+                            "despacho": shipping_label_from_order_and_shipment(order, shipment),
+                            "etiqueta": "Disponible" if label_ready else "No disponible",
                         }
                     )
 
+            if not ready_shipments:
+                continue
+
             shipping_type = "Colecta"
-            if shipment_details:
-                shipping_type = shipping_label_from_shipment(shipment_details[0])
+            if ready_shipments:
+                shipping_type = shipping_label_from_order_and_shipment(order, ready_shipments[0])
 
             for order_item in order.get("order_items") or []:
                 item = order_item.get("item") or {}
                 sku = extract_order_item_sku(order_item)
-                rows.append(
-                    {
-                        "MELI_ID": display_id,
-                        "CB": sku,
-                        "CB alt": sku,
-                        "Nombre Producto": item.get("title") or "",
-                        "Cant.": int(order_item.get("quantity") or 0),
-                        "Tipo de Despacho": shipping_type,
-                    }
+                rows.extend(
+                    rows_for_order_item(
+                        display_id=display_id,
+                        sku=sku,
+                        title=item.get("title") or "",
+                        quantity=int(order_item.get("quantity") or 0),
+                        shipping_type=shipping_type,
+                    )
                 )
 
         if len(orders) < page_size:
             break
 
-    orders_table = clean_orders(pd.DataFrame(rows, columns=REQUIRED_COLUMNS))
+    orders_table = pd.DataFrame(rows, columns=REQUIRED_COLUMNS)
+    if not orders_table.empty:
+        orders_table = clean_orders(orders_table)
     shipments_table = pd.DataFrame(
         shipment_rows,
         columns=["MELI_ID", "shipment_id", "estado", "subestado", "despacho", "etiqueta"],
@@ -927,8 +1017,8 @@ def render_daily_sales() -> None:
         elif "orders" in st.session_state:
             orders = st.session_state.orders
         else:
-            orders = sample_orders()
-            initialize_state(orders)
+            st.info("Todavía no hay ventas cargadas. Usa el botón de MELI o carga un archivo manual.")
+            return
         summary = shipping_summary(orders)
         st.success(f"Pedidos cargados: {summary['total']} · Productos: {len(orders)}")
         total_col, flex_col, colecta_col, full_col, products_col = st.columns(5)
@@ -952,7 +1042,7 @@ def render_labels() -> None:
     labels_pdf = st.session_state.get("meli_labels_pdf", b"")
     label_shipments = st.session_state.get("meli_label_shipments", [])
     if labels_pdf:
-        st.success(f"Etiquetas depuradas listas: {len(label_shipments)} envios.")
+        st.success(f"Etiquetas depuradas listas: {len(label_shipments)} envíos.")
         if st.session_state.get("meli_labels_message"):
             st.caption(st.session_state.meli_labels_message)
         if st.session_state.get("meli_labels_summary"):
@@ -1000,7 +1090,8 @@ def render_labels() -> None:
 def render_order_control() -> None:
     st.subheader("Control de pedidos")
     if "orders" not in st.session_state:
-        initialize_state(sample_orders())
+        st.info("Primero carga las ventas del día.")
+        return
     if "order_input_counter" not in st.session_state:
         st.session_state.order_input_counter = 0
     if "product_input_counter" not in st.session_state:
