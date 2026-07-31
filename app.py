@@ -316,6 +316,39 @@ def focus_text_input(label: str, focus_token: str) -> None:
     )
 
 
+def _fragment(func):
+    """Use Streamlit fragments when available, with a safe fallback."""
+    fragment = getattr(st, "fragment", None)
+    return fragment(func) if callable(fragment) else func
+
+
+def _submit_order_scan() -> None:
+    raw_value = st.session_state.get("order_scan_input", "")
+    if not normalize_code(raw_value):
+        return
+    process_order_scan(raw_value)
+    st.session_state["order_scan_input"] = ""
+    st.session_state.order_input_counter = st.session_state.get("order_input_counter", 0) + 1
+
+
+def _submit_product_scan() -> None:
+    raw_value = st.session_state.get("product_scan_input", "")
+    if not normalize_code(raw_value):
+        return
+    process_product_scan(raw_value)
+    st.session_state["product_scan_input"] = ""
+    st.session_state.product_input_counter = st.session_state.get("product_input_counter", 0) + 1
+
+
+def _submit_package_scan() -> None:
+    raw_value = st.session_state.get("package_scan_input", "")
+    if not normalize_code(raw_value):
+        return
+    process_package_scan(raw_value)
+    st.session_state["package_scan_input"] = ""
+    st.session_state.package_input_counter = st.session_state.get("package_input_counter", 0) + 1
+
+
 def process_labels_pdf(pdf_bytes: bytes, output_name: str | None = None) -> dict:
     if not pdf_bytes:
         raise ValueError("MELI no entrego un PDF de etiquetas.")
@@ -1087,6 +1120,9 @@ def reset_day_state() -> None:
         "last_message_id",
         "last_spoken_message",
         "last_spoken_message_id",
+        "order_scan_input",
+        "product_scan_input",
+        "package_scan_input",
     ]
     for key in keys_to_clear:
         st.session_state.pop(key, None)
@@ -1372,15 +1408,16 @@ def render_labels() -> None:
     else:
         st.info("Primero usa `Actualizar ventas y etiquetas desde MELI` en Ventas del dia.")
 
+@_fragment
 def render_order_control() -> None:
     st.subheader("Control de pedidos")
     if "orders" not in st.session_state:
         st.info("Primero carga las ventas del día.")
         return
-    if "order_input_counter" not in st.session_state:
-        st.session_state.order_input_counter = 0
-    if "product_input_counter" not in st.session_state:
-        st.session_state.product_input_counter = 0
+    st.session_state.setdefault("order_input_counter", 0)
+    st.session_state.setdefault("product_input_counter", 0)
+    st.session_state.setdefault("order_scan_input", "")
+    st.session_state.setdefault("product_scan_input", "")
 
     current_message = st.session_state.get("last_message", "Listo para escanear.")
     st.info(current_message)
@@ -1389,7 +1426,10 @@ def render_order_control() -> None:
 
     if st.button("Deshacer última lectura", disabled=not st.session_state.get("scan_history")):
         undo_last_scan()
-        st.rerun()
+        if hasattr(st, "fragment"):
+            st.rerun(scope="fragment")
+        else:
+            st.rerun()
 
     if all_orders_complete():
         st.success("Todos los pedidos fueron revisados con éxito.")
@@ -1401,33 +1441,36 @@ def render_order_control() -> None:
 
     selected = st.session_state.get("selected_order")
     if not selected:
-        order_key = f"order_input_{st.session_state.order_input_counter}"
-        order_scan = st.text_input("MELI ID del pedido", key=order_key, placeholder="Escanea o escribe el MELI ID")
+        label = "MELI ID del pedido"
+        st.text_input(
+            label,
+            key="order_scan_input",
+            placeholder="Escanea o escribe el MELI ID",
+            on_change=_submit_order_scan,
+        )
         focus_text_input(
-            "MELI ID del pedido",
+            label,
             f"order-{st.session_state.order_input_counter}",
         )
-        if order_scan:
-            process_order_scan(order_scan)
-            st.session_state.order_input_counter += 1
-            st.rerun()
         st.divider()
         st.write("Resumen")
         order_status = status_table()
         st.dataframe(status_table_style(order_status), use_container_width=True, hide_index=True)
         return
 
-    product_key = f"product_input_{st.session_state.product_input_counter}"
-    product_scan = st.text_input("Código del producto", key=product_key, placeholder="Escanea el producto")
+    label = "Código del producto"
+    st.text_input(
+        label,
+        key="product_scan_input",
+        placeholder="Escanea el producto",
+        on_change=_submit_product_scan,
+    )
     focus_text_input(
-        "Código del producto",
+        label,
         f"product-{st.session_state.product_input_counter}",
     )
-    if product_scan:
-        process_product_scan(product_scan)
-        st.session_state.product_input_counter += 1
-        st.rerun()
 
+    selected = st.session_state.get("selected_order")
     if selected:
         st.write(f"Pedido activo: `{selected}`")
         rows = order_rows(selected)
@@ -1453,7 +1496,6 @@ def render_order_control() -> None:
     order_status = status_table()
     st.dataframe(status_table_style(order_status), use_container_width=True, hide_index=True)
 
-
 def render_package_metrics() -> None:
     status = package_status_table()
     summary = shipping_summary(st.session_state.orders)
@@ -1468,30 +1510,32 @@ def render_package_metrics() -> None:
     pending_col.metric("Pendientes", pending_count)
 
 
+@_fragment
 def render_package_control() -> None:
     st.subheader("Control de paquetes")
     st.caption("Escanea cada etiqueta antes de subir el paquete al transporte.")
     if "orders" not in st.session_state:
         st.info("Primero carga las ventas del día.")
         return
-    if "package_input_counter" not in st.session_state:
-        st.session_state.package_input_counter = 0
+    st.session_state.setdefault("package_input_counter", 0)
+    st.session_state.setdefault("package_scan_input", "")
 
     current_message = st.session_state.get("last_message", "Listo para escanear paquetes.")
     st.info(current_message)
     speak_once(current_message)
     render_package_metrics()
 
-    package_key = f"package_input_{st.session_state.package_input_counter}"
-    package_scan = st.text_input("MELI ID del paquete", key=package_key, placeholder="Escanea el MELI ID de la etiqueta")
+    label = "MELI ID del paquete"
+    st.text_input(
+        label,
+        key="package_scan_input",
+        placeholder="Escanea el MELI ID de la etiqueta",
+        on_change=_submit_package_scan,
+    )
     focus_text_input(
-        "MELI ID del paquete",
+        label,
         f"package-{st.session_state.package_input_counter}",
     )
-    if package_scan:
-        process_package_scan(package_scan)
-        st.session_state.package_input_counter += 1
-        st.rerun()
 
     st.divider()
     st.write("Resumen")
@@ -1511,7 +1555,6 @@ def render_package_control() -> None:
         reset_day_state()
         st.success("Día inicializado. Vuelve a Ventas del día para cargar MELI nuevamente.")
         st.rerun()
-
 
 def render_download_state() -> None:
     if "orders" not in st.session_state:
