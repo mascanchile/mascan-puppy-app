@@ -280,21 +280,36 @@ def auto_download_bytes(data: bytes, file_name: str, mime: str) -> None:
     )
 
 
-def focus_text_input(label: str) -> None:
+def focus_text_input(label: str, focus_token: str) -> None:
     safe_label = json.dumps(label, ensure_ascii=False)
+    safe_token = json.dumps(focus_token, ensure_ascii=False)
     components.html(
         f"""
         <script>
         const label = {safe_label};
+        const focusToken = {safe_token};
+        const parentDocument = window.parent.document;
+        let attempts = 0;
+        let observer;
         function focusInput() {{
-            const input = window.parent.document.querySelector(`input[aria-label="${{label}}"]`);
+            const input = [...parentDocument.querySelectorAll("input")].find(
+                (candidate) => candidate.getAttribute("aria-label") === label
+                    && candidate.offsetParent !== null
+                    && !candidate.disabled
+            );
             if (input) {{
-                input.focus();
+                input.focus({{preventScroll: true}});
                 input.select();
+                if (observer) observer.disconnect();
+                return;
             }}
+            attempts += 1;
+            if (attempts < 40) setTimeout(focusInput, 75);
         }}
-        setTimeout(focusInput, 150);
-        setTimeout(focusInput, 500);
+        observer = new MutationObserver(focusInput);
+        observer.observe(parentDocument.body, {{childList: true, subtree: true}});
+        setTimeout(focusInput, 0);
+        setTimeout(() => observer.disconnect(), 3500);
         </script>
         """,
         height=0,
@@ -1388,7 +1403,10 @@ def render_order_control() -> None:
     if not selected:
         order_key = f"order_input_{st.session_state.order_input_counter}"
         order_scan = st.text_input("MELI ID del pedido", key=order_key, placeholder="Escanea o escribe el MELI ID")
-        focus_text_input("MELI ID del pedido")
+        focus_text_input(
+            "MELI ID del pedido",
+            f"order-{st.session_state.order_input_counter}",
+        )
         if order_scan:
             process_order_scan(order_scan)
             st.session_state.order_input_counter += 1
@@ -1401,7 +1419,10 @@ def render_order_control() -> None:
 
     product_key = f"product_input_{st.session_state.product_input_counter}"
     product_scan = st.text_input("Código del producto", key=product_key, placeholder="Escanea el producto")
-    focus_text_input("Código del producto")
+    focus_text_input(
+        "Código del producto",
+        f"product-{st.session_state.product_input_counter}",
+    )
     if product_scan:
         process_product_scan(product_scan)
         st.session_state.product_input_counter += 1
@@ -1463,7 +1484,10 @@ def render_package_control() -> None:
 
     package_key = f"package_input_{st.session_state.package_input_counter}"
     package_scan = st.text_input("MELI ID del paquete", key=package_key, placeholder="Escanea el MELI ID de la etiqueta")
-    focus_text_input("MELI ID del paquete")
+    focus_text_input(
+        "MELI ID del paquete",
+        f"package-{st.session_state.package_input_counter}",
+    )
     if package_scan:
         process_package_scan(package_scan)
         st.session_state.package_input_counter += 1
